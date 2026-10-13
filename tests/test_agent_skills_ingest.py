@@ -335,6 +335,7 @@ def test_ingest_local_processing_error_is_reported(workdir):
 
 def test_process_document_passes_page_range_to_converter(workdir):
     """Verify that process_document passes page_range=(1, max_pages) to Docling."""
+    pytest.importorskip("docling_core")
     pdf = workdir / "big.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake content")
 
