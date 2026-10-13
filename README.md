@@ -14,6 +14,8 @@ Skills are organized in a tree — install the whole collection or pick individu
 | **Observability** | [log-analytics](skills/opensearch-skills/observability/log-analytics/) | Query and analyze logs with PPL — error patterns, anomaly detection |
 | **Observability** | [trace-analytics](skills/opensearch-skills/observability/trace-analytics/) | Investigate distributed traces — slow spans, service maps, agent invocations |
 | **Cloud** | [aws-setup](skills/opensearch-skills/cloud/aws-setup/) | Deploy to Amazon OpenSearch Service or Serverless |
+| **Cloud** | [managed-ingestion-service](skills/opensearch-skills/cloud/managed-ingestion-service/) | Ingest chunks at scale via OSIS pipelines with ASE |
+| **Cloud** | [aiven-setup](skills/opensearch-skills/cloud/aiven-setup/) | Deploy to Aiven for OpenSearch (managed, multi-cloud) |
 
 > More skills coming soon — contributions welcome! See [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
 
@@ -32,6 +34,8 @@ npx skills add opensearch-project/opensearch-agent-skills@opensearch-launchpad -
 npx skills add opensearch-project/opensearch-agent-skills@log-analytics --full-depth
 npx skills add opensearch-project/opensearch-agent-skills@trace-analytics --full-depth
 npx skills add opensearch-project/opensearch-agent-skills@aws-setup --full-depth
+npx skills add opensearch-project/opensearch-agent-skills@managed-ingestion-service --full-depth
+npx skills add opensearch-project/opensearch-agent-skills@aiven-setup --full-depth
 ```
 
 ### Install options
@@ -102,12 +106,25 @@ skills/
         SKILL.md
         traces.md
         ppl-reference.md
+    ingest/                           # Category: Ingest
+      SKILL.md
+      document-processing/            # Local document processing (Docling)
+        SKILL.md
+        document_processing_guide.md
     cloud/                            # Category: Cloud deployment
       SKILL.md
       aws-setup/                      # AWS provisioning & deployment
         SKILL.md
         aos/                          # Amazon OpenSearch Service guides
         aoss/                         # Amazon OpenSearch Serverless guides
+        reference.md
+      managed-ingestion-service/      # Cloud-scale ingestion via OSIS
+        SKILL.md
+        iam-setup.md
+      aiven-setup/                    # Aiven provisioning & deployment
+        SKILL.md
+        aiven-01-provision.md         # Provision the managed service
+        aiven-02-deploy-search.md     # Deploy the search configuration
         reference.md
 tests/                                # pytest test suite
 ```

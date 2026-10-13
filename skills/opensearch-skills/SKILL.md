@@ -21,7 +21,7 @@ metadata:
 
 # OpenSearch Skills
 
-This is the top-level skill for OpenSearch. It contains category skills that can also be installed and used independently:
+This is the top-level skill for OpenSearch. It contains four category skills that can also be installed and used independently:
 
 | Category | Skill | Install individually |
 |---|---|---|
@@ -29,6 +29,9 @@ This is the top-level skill for OpenSearch. It contains category skills that can
 | [observability](observability/SKILL.md) | [log-analytics](observability/log-analytics/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@log-analytics --full-depth` |
 | [observability](observability/SKILL.md) | [trace-analytics](observability/trace-analytics/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@trace-analytics --full-depth` |
 | [cloud](cloud/SKILL.md) | [aws-setup](cloud/aws-setup/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@aws-setup --full-depth` |
+| [cloud](cloud/SKILL.md) | [aiven-setup](cloud/aiven-setup/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@aiven-setup --full-depth` |
+| [ingest](ingest/SKILL.md) | [document-processing](ingest/document-processing/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@document-processing --full-depth` |
+| [cloud](cloud/SKILL.md) | [managed-ingestion-service](cloud/managed-ingestion-service/SKILL.md) | `npx skills add opensearch-project/opensearch-agent-skills@managed-ingestion-service --full-depth` |
 
 ## Routing
 
@@ -42,9 +45,63 @@ Route to the right skill based on user intent:
 | Analyze logs, query with PPL, discover error patterns | [log-analytics](observability/log-analytics/SKILL.md) |
 | Investigate traces, debug spans, analyze service maps | [trace-analytics](observability/trace-analytics/SKILL.md) |
 | Deploy to AWS, provision a domain or collection | [aws-setup](cloud/aws-setup/SKILL.md) |
+| Deploy to Aiven, provision a managed OpenSearch service | [aiven-setup](cloud/aiven-setup/SKILL.md) |
+| Process documents into chunks (PDF/DOCX → JSONL) | [document-processing](ingest/document-processing/SKILL.md) |
+| Ingest chunks at scale via OSIS, S3 to AOS/AOSS | [managed-ingestion-service](cloud/managed-ingestion-service/SKILL.md) |
 | General OpenSearch question | Search docs first, then route to the relevant skill |
 
-If the user's intent spans multiple skills (e.g., "build a search app and deploy it to AWS"), start with the appropriate skill and transition to the next when ready.
+If the user's intent spans multiple skills (e.g., "build a search app and deploy it to Aiven"), start with the appropriate skill and transition to the next when ready.
+
+## Feedback Collection (Required Behavior)
+
+**This applies to ALL skills in this collection** — opensearch-launchpad, log-analytics, trace-analytics, aws-setup, aiven-setup, document-processing, and managed-ingestion-service. Regardless of which skill is active, you MUST follow these rules.
+
+You MUST proactively collect feedback during every interaction. This is not optional — treat it as a core part of the workflow, not an afterthought.
+
+### Rules
+
+1. **Monitor continuously** — watch for failures, confusion, and unmet needs throughout the conversation, not just at the end.
+2. **Offer immediately on failure** — when any command errors or a step doesn't work, immediately offer to capture feedback before troubleshooting.
+3. **Offer on uncertainty** — if you're unsure how to proceed or the skill doesn't cover the user's request, flag it as a potential gap and offer to submit.
+4. **Ask at natural breakpoints** — after completing a major phase (not just at the very end), ask "Is this working as expected? Any friction so far?"
+5. **Always ask at end** — when the user says they're done or the workflow completes, ask for a 1-5 rating.
+6. **Never send without consent** — show the preview, get explicit "yes".
+
+### Triggers
+
+| When | What to do |
+|------|------------|
+| Command returns non-zero exit or error | → Immediately: "That failed. Can I capture this as feedback?" |
+| User says "that's not what I wanted" / "this is confusing" / expresses frustration | → "Sounds like friction. Can I note what went wrong?" |
+| User asks for something you can't do | → "This isn't supported yet. Can I flag this as a feature gap?" |
+| A workaround is needed (something should be simpler) | → "That was more steps than it should be. Can I flag this as friction?" |
+| Major phase completes | → "How's it going so far? Any issues?" |
+| User says "done" or workflow ends | → "How was the overall experience? (1-5)" |
+
+### How to Submit
+
+Requires `uv` installed (for running Python scripts)
+
+1. Compose the feedback (type + context).
+2. Show preview to user.
+3. Ask: "May I submit this anonymous feedback?"
+4. On consent:
+
+```bash
+uv run python scripts/opensearch_ops.py submit-feedback \
+  --type <failure|gap|friction|success> \
+  --skill <skill-name> \
+  --context "<error message, command, what happened>" \
+  --comment "<user's words>" \
+  --rating "<1-5, for success only>"
+```
+
+### Feedback Types
+
+- `failure` — A command or step produced an error
+- `gap` — User needs something the skill doesn't support
+- `friction` — Workflow was confusing, slow, or required workarounds
+- `success` — Workflow completed, user satisfied
 
 ## Shared Resources
 

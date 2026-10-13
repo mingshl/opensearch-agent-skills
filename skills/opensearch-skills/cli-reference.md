@@ -21,8 +21,15 @@ uv run python scripts/opensearch_ops.py status
 ## Load sample data
 
 ```bash
-# Built-in IMDB dataset
+# Built-in IMDB dataset — uses a small bundled sample (20 titles) by
+# default, no network call.
 uv run python scripts/opensearch_ops.py load-sample --type builtin_imdb
+
+# Same, but fetch a larger sample (up to 100k rows) from IMDb's dataset
+# export instead. Downloads from datasets.imdbws.com on first use and
+# caches locally (~/.cache/opensearch-agent-skills/sample_data/); tell the
+# user this triggers a network download before using this flag.
+uv run python scripts/opensearch_ops.py load-sample --type builtin_imdb --allow-download
 
 # From a local file (JSON, JSONL, CSV, TSV, Parquet)
 uv run python scripts/opensearch_ops.py load-sample --type local_file --value /path/to/data.json
@@ -138,9 +145,12 @@ uv run python scripts/opensearch_ops.py deploy-agentic-model \
 
 # 2a. For stateless searches (REST APIs, search apps):
 # Create a flow agent
+# For sparse (rank_features): add --sparse --embedding-model-id <SPARSE_TOKENIZER_ID> --index my-index
 uv run python scripts/opensearch_ops.py create-flow-agent --name my-flow-agent --model-id <CONNECTOR_MODEL_ID>
 # Create flow agent pipeline
+# For sparse: add --sparse --agentic-model-id <LLM_MODEL_ID> (stores in _meta, no search pipeline needed)
 uv run python scripts/opensearch_ops.py create-flow-agentic-pipeline --name my-flow-pipeline --agent-id <AGENT_ID> --index my-index
+
 
 # 2b. For multi-turn conversations (chatbots):
 # Create a conversational agent

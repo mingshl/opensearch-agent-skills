@@ -22,6 +22,7 @@ Commands:
     index-bulk             Bulk index documents from sample data
     launch-ui              Launch the Search Builder UI (local or remote endpoint)
     search                 Run a search query
+    submit-feedback        Submit anonymous skill feedback
     load-sample            Load sample data (file, URL, builtin IMDB)
     cleanup                Stop UI and clean up
     read-knowledge         Read a knowledge base reference file
@@ -81,7 +82,10 @@ def cmd_deploy_model(args):
 
 
 def cmd_deploy_bedrock(args):
+    import os
     from lib.operations import deploy_bedrock_model
+    if args.region:
+        os.environ["AWS_REGION"] = args.region
     print(deploy_bedrock_model(args.name))
 
 
@@ -118,7 +122,19 @@ def cmd_index_bulk(args):
         print(json.dumps({"error": "Provide --source-file for bulk indexing."}))
         return
 
-    print(index_bulk(args.index, records[:args.count], id_prefix="verification"))
+    result = index_bulk(args.index, records[:args.count], id_prefix="verification")
+
+    # Record which chunk set this index was built from (when indexing a chunk
+    # set) so the ingestion view can be offered even if the index name differs.
+    try:
+        from lib.ingest import chunk_source_from_path, record_index_provenance
+        chunk_source = chunk_source_from_path(args.source_file)
+        if chunk_source:
+            record_index_provenance(args.index, chunk_source)
+    except Exception:
+        pass
+
+    print(result)
 
 
 def cmd_launch_ui(args):
@@ -131,6 +147,7 @@ def cmd_launch_ui(args):
         aws_service=args.aws_service or "",
         username=args.username or "",
         password=args.password or "",
+        mode=getattr(args, "mode", "full"),
     )
     print(result)
     if "started" in result.lower() or "running" in result.lower():
@@ -142,6 +159,26 @@ def cmd_launch_ui(args):
                 time.sleep(1)
         except KeyboardInterrupt:
             print("\nStopping UI server.", file=sys.stderr)
+
+
+def cmd_submit_feedback(args):
+    from lib.feedback import format_feedback_preview, submit_feedback
+    preview = format_feedback_preview(
+        feedback_type=args.type,
+        skill_name=args.skill,
+        context=args.context or "",
+        comment=args.comment or "",
+        rating=args.rating or "",
+    )
+    print(preview)
+    result = submit_feedback(
+        feedback_type=args.type,
+        skill_name=args.skill,
+        context=args.context or "",
+        comment=args.comment or "",
+        rating=args.rating or "",
+    )
+    print(result)
 
 
 def cmd_search(args):
@@ -162,7 +199,7 @@ def cmd_load_sample(args):
         load_sample_from_paste,
     )
     dispatch = {
-        "builtin_imdb": lambda: load_sample_builtin_imdb(),
+        "builtin_imdb": lambda: load_sample_builtin_imdb(allow_download=args.allow_download),
         "local_file": lambda: load_sample_from_file(args.value),
         "url": lambda: load_sample_from_url(args.value),
         "localhost_index": lambda: load_sample_from_index(args.value),
@@ -283,9 +320,95 @@ def cmd_deploy_rag_model(args):
     print(result)
 
 
+def cmd_ingest(args):
+    from lib.ingest import ingest_local, detect_document_profile, PROFILES, estimate_pages
+
+    source = args.source
+    index = args.index
+    max_pages = args.max_pages
+    max_tokens = args.max_tokens
+
+    # Resolve profile: None or "auto" → detect; explicit → use directly.
+    profile = args.profile
+    if not profile or profile == "auto":
+        detection = detect_document_profile(source)
+        recommended = detection["profile"]
+        if recommended in PROFILES:
+            profile = recommended
+            note = f"Auto-detected profile '{recommended}' ({detection['confidence']} confidence): {detection['reason']}"
+        else:
+            profile = "semantic"
+            note = (
+                f"Auto-detected '{recommended}' ({detection['reason']}), but that profile "
+                f"is not available yet; using 'semantic'. Re-run with --profile to override."
+            )
+        print(json.dumps({"status": "profile_detected", "detection": detection, "using_profile": profile, "note": note}))
+
+    # Truncation guard: if total pages exceed --max-pages, require --confirm
+    # (especially important for --background where there's no interactive prompt).
+    total_pages = estimate_pages(source)
+    if total_pages > max_pages and not args.confirm:
+        print(json.dumps({
+            "error": "truncation_not_confirmed",
+            "detail": (
+                f"Document has ~{total_pages} pages but --max-pages is {max_pages}. "
+                f"Re-run with --confirm to acknowledge truncation, or increase --max-pages."
+            ),
+            "total_pages": total_pages,
+            "max_pages": max_pages,
+        }, indent=2))
+        return
+
+    # Background mode: spawn detached subprocess and return immediately.
+    if args.background:
+        from lib.ingest import ingest_background, resolve_index_name
+        idx = resolve_index_name(index, source)
+        result = ingest_background(
+            source=source, index=idx, max_pages=max_pages,
+            max_tokens=max_tokens, profile=profile,
+        )
+        print(json.dumps(result, indent=2))
+        return
+
+    result = ingest_local(source, index, max_pages=max_pages, max_tokens=max_tokens, profile=profile)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_ingest_status(args):
+    from lib.ingest import read_status
+    status = read_status()
+    print(json.dumps(status or {"active": False}, indent=2))
+
+
+def cmd_eval_document(args):
+    """Emit metrics + a chunk sample for the AGENT (LLM) to judge processing quality."""
+    from lib.quality import build_eval_payload
+    payload = build_eval_payload(args.index, max_samples=args.samples)
+    print(json.dumps(payload, indent=2))
+
+
+def cmd_save_quality(args):
+    """Persist the agent's quality verdict (JSON) to the index's _quality.json."""
+    from lib.quality import save_verdict
+    raw = args.verdict
+    if args.verdict_file:
+        from pathlib import Path
+        raw = Path(args.verdict_file).read_text()
+    try:
+        verdict = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"verdict is not valid JSON: {e}"}))
+        return
+    result = save_verdict(args.index, verdict)
+    print(json.dumps(result, indent=2))
+
+
 def cmd_create_flow_agent(args):
     from lib.operations import create_flow_agent
-    print(create_flow_agent(args.name, args.model_id))
+    print(create_flow_agent(
+        args.name, args.model_id, args.embedding_model_id,
+        index_name=args.index, is_sparse=args.sparse,
+    ))
 
 
 def cmd_create_conversational_agent(args):
@@ -316,7 +439,12 @@ def cmd_compare_ui(args):
 
 def cmd_create_flow_agentic_pipeline(args):
     from lib.operations import create_flow_agentic_pipeline
-    print(create_flow_agentic_pipeline(args.name, args.agent_id, args.index))
+    print(create_flow_agentic_pipeline(
+        args.name, args.agent_id, args.index,
+        embedding_model_id=args.embedding_model_id,
+        is_sparse=args.sparse,
+        agentic_model_id=getattr(args, "agentic_model_id", ""),
+    ))
 
 
 def cmd_create_conversational_agent_pipeline(args):
@@ -351,6 +479,7 @@ def main():
     # deploy-bedrock
     p = sub.add_parser("deploy-bedrock", help="Register a Bedrock embedding model")
     p.add_argument("--name", required=True)
+    p.add_argument("--region", default="")
 
     # create-pipeline
     p = sub.add_parser("create-pipeline", help="Create and attach a pipeline")
@@ -381,6 +510,15 @@ def main():
     p.add_argument("--aws-service", default="", help="AWS service: 'aoss' or 'es'")
     p.add_argument("--username", default="", help="Basic auth username (non-AWS remote)")
     p.add_argument("--password", default="", help="Basic auth password (non-AWS remote)")
+    p.add_argument("--mode", default="full", choices=["full", "ingestion", "search"], help="UI views: 'full' (ingestion+search, default), 'ingestion' (chunk inspector only), 'search' (search only)")
+
+    # submit-feedback
+    p = sub.add_parser("submit-feedback", help="Submit anonymous skill feedback")
+    p.add_argument("--type", required=True, choices=["failure", "gap", "friction", "success"])
+    p.add_argument("--skill", required=True, help="Skill name (e.g. opensearch-launchpad)")
+    p.add_argument("--context", default="", help="Technical context (error, command, etc)")
+    p.add_argument("--comment", default="", help="User comment")
+    p.add_argument("--rating", default="", help="Rating 1-5 (for success feedback)")
 
     # search
     p = sub.add_parser("search", help="Run a search query")
@@ -393,6 +531,10 @@ def main():
     p.add_argument("-t", "--type", required=True,
                     choices=["builtin_imdb", "local_file", "url", "localhost_index", "paste"])
     p.add_argument("-v", "--value", default="")
+    p.add_argument("--allow-download", action="store_true",
+                    help="For --type builtin_imdb: fetch a larger sample (up to 100k rows) "
+                         "from IMDb's dataset export instead of the small bundled fallback. "
+                         "Tell the user this triggers a network download before using it.")
 
     # cleanup
     sub.add_parser("cleanup", help="Stop UI and clean up")
@@ -407,7 +549,7 @@ def main():
     p.add_argument("--secret-key", default="")
     p.add_argument("--region", default="us-east-1")
     p.add_argument("--session-token", default="")
-    p.add_argument("--model-name", default="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    p.add_argument("--model-name", default="us.anthropic.claude-sonnet-4-6")
 
     # deploy-rag-model
     p = sub.add_parser("deploy-rag-model", help="Deploy Bedrock Claude for RAG processor (invoke API)")
@@ -415,7 +557,7 @@ def main():
     p.add_argument("--secret-key", default="")
     p.add_argument("--region", default="us-east-1")
     p.add_argument("--session-token", default="")
-    p.add_argument("--model-name", default="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    p.add_argument("--model-name", default="us.anthropic.claude-sonnet-4-6")
 
     # compare-ui
     p = sub.add_parser("compare-ui", help="Launch Search Builder UI in comparison mode")
@@ -426,6 +568,9 @@ def main():
     p = sub.add_parser("create-flow-agent", help="Create a flow agent for agentic search (stateless)")
     p.add_argument("--name", required=True)
     p.add_argument("--model-id", required=True)
+    p.add_argument("--embedding-model-id", default="", help="Embedding model ID (sparse tokenizer or dense encoder)")
+    p.add_argument("--index", default="", help="Target index (required for sparse)")
+    p.add_argument("--sparse", action="store_true", help="Use NeuralSparseSearchTool for rank_features fields")
 
     # create-conversational-agent
     p = sub.add_parser("create-conversational-agent", help="Create a conversational agent with memory (multi-turn)")
@@ -444,6 +589,9 @@ def main():
     p.add_argument("--name", required=True, help="Pipeline name")
     p.add_argument("--agent-id", required=True, help="Flow agent ID")
     p.add_argument("--index", required=True, help="Index name")
+    p.add_argument("--embedding-model-id", default="", help="Embedding model ID for neural_query_enricher (dense path)")
+    p.add_argument("--sparse", action="store_true", help="Sparse mode: store agent in _meta instead of search pipeline")
+    p.add_argument("--agentic-model-id", default="", help="LLM model ID for RAG summary (sparse path)")
 
     # create-conversational-agent-pipeline
     p = sub.add_parser("create-conversational-agent-pipeline", help="Create conversational agent pipeline with RAG")
@@ -451,6 +599,30 @@ def main():
     p.add_argument("--agent-id", required=True, help="Conversational agent ID")
     p.add_argument("--index", required=True, help="Index name")
     p.add_argument("--model-id", required=True, help="Deployed LLM model ID for RAG")
+
+    # ingest
+    p = sub.add_parser("ingest", help="Process a document: parse and chunk locally (index name auto-derived if omitted)")
+    p.add_argument("--source", required=True, help="Path to source file (PDF, DOCX, etc.)")
+    p.add_argument("--index", default=None, help="Target index name. If omitted, derived from filename.")
+    p.add_argument("--profile", default=None, choices=["auto", "semantic", "tables", "scanned", "multimodal"], help="Processing profile (default: auto-detect)")
+    p.add_argument("--max-pages", type=int, default=10, help="Max pages to process (default: 10)")
+    p.add_argument("--max-tokens", type=int, default=None, help="Max tokens per chunk (default: profile default)")
+    p.add_argument("--background", action="store_true", help="Run ingestion as a detached background process (poll with ingest-status)")
+    p.add_argument("--confirm", action="store_true", help="Confirm truncation when total pages exceed --max-pages (required for --background)")
+
+    # ingest-status
+    sub.add_parser("ingest-status", help="Check ingestion job status")
+
+    # eval-document — emit metrics + chunk sample for the agent (LLM) to judge
+    p = sub.add_parser("eval-document", help="Emit metrics + chunk sample for the agent to judge processing quality")
+    p.add_argument("--index", required=True, help="Index whose local chunks to evaluate")
+    p.add_argument("--samples", type=int, default=8, help="Number of chunk samples to include (default: 8)")
+
+    # save-quality — persist the agent's verdict to the index metadata
+    p = sub.add_parser("save-quality", help="Persist the agent's quality verdict (JSON) for an index")
+    p.add_argument("--index", required=True, help="Index to attach the verdict to")
+    p.add_argument("--verdict", default="", help="Verdict as a JSON string")
+    p.add_argument("--verdict-file", default="", help="Path to a JSON file with the verdict (alternative to --verdict)")
 
     args = parser.parse_args()
 
@@ -466,6 +638,7 @@ def main():
         "launch-ui": cmd_launch_ui,
         "compare-ui": cmd_compare_ui,
         "search": cmd_search,
+        "submit-feedback": cmd_submit_feedback,
         "load-sample": cmd_load_sample,
         "cleanup": cmd_cleanup,
         "read-knowledge": cmd_read_knowledge,
@@ -476,6 +649,10 @@ def main():
         "create-flow-agentic-pipeline": cmd_create_flow_agentic_pipeline,
         "create-conversational-agent-pipeline": cmd_create_conversational_agent_pipeline,
         "search-docs": cmd_search_docs,
+        "ingest": cmd_ingest,
+        "ingest-status": cmd_ingest_status,
+        "eval-document": cmd_eval_document,
+        "save-quality": cmd_save_quality,
     }
 
     fn = dispatch.get(args.command)
