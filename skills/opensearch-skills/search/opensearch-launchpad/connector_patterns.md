@@ -1,82 +1,101 @@
 # Connector Patterns for ML Inference Processors
 
-## Key Insight: `ml_inference` Uses JSONPath — Maximum Flexibility, No Preprocessing
+How to get a working connector and model for `ml_inference`, and how to read its output.
+For IAM and platform limits, see [ml_inference_platforms.md](ml_inference_platforms.md).
 
-The `ml_inference` processor's power comes from **JSONPath-based field extraction**. Unlike the specialized `text_embedding` processor that can only read a single flat text field, `ml_inference` uses `input_map` with JSONPath to extract **any** value from the document — nested objects, array elements, specific positions — and maps it directly to the connector's `request_body` template.
-
-This means:
-- **No preprocessing layer needed** — no `script` or `set` processors to reshape your document before the model sees it
-- **No `pre_process_function` / `post_process_function` needed** — `input_map` feeds the model, `output_map` picks the result
-- **Works for any model type** — embeddings, LLMs, classifiers, rerankers — all through the same processor
-- **Handles nested data natively** — `items[0].description`, `metadata.tags`, `reviews.text` all work directly
+The data flow is:
 
 ```
-Document field (any JSONPath) → input_map → ${parameters.X} in request_body → Model → response JSON → output_map JSONPath → target field
+document or request field (JSONPath) → input_map → ${parameters.X} in connector request_body → model
+→ response JSON → output_map JSONPath → target field
 ```
 
 ---
 
-## Connector Blueprints (Official Recipes)
+## Start from a blueprint
 
-Instead of writing connectors from scratch, **start from the official blueprints**:
+Copy a connector from the official blueprints instead of writing one:
+[ml-commons standard blueprints](https://github.com/opensearch-project/ml-commons/tree/main/docs/remote_inference_blueprints/standard_blueprints).
 
-📁 **[opensearch-project/ml-commons — Standard Blueprints](https://github.com/opensearch-project/ml-commons/tree/main/docs/remote_inference_blueprints/standard_blueprints)**
-
-Key blueprints for `ml_inference` use cases:
-
-| Model | Blueprint | Use Case |
+| Model | Blueprint | Use case |
 |---|---|---|
-| Titan Embed v2 | `bedrock_connector_titan_embedding_v2_blueprint.md` | Auto-embedding for kNN/semantic search |
-| Claude (Anthropic) | `bedrock_connector_anthropic_claude_blueprint.md` | NER, summarization, classification, PII redaction |
+| Titan Embed v2 | `bedrock_connector_titan_embedding_v2_blueprint.md` | Embeddings for kNN |
+| Claude (Anthropic) | `bedrock_connector_anthropic_claude_blueprint.md` | NER, summarization, classification, PII redaction, RAG |
 | Nova Micro/Lite/Pro | `bedrock_connector_nova_blueprint.md` | Fast classification (sentiment, language, intent) |
-| Cohere Embed | `bedrock_connector_cohere_cohere.embed_blueprint.md` | Cohere embeddings |
+| Cohere Embed | `bedrock_connector_cohere_cohere.embed_blueprint.md` | Embeddings, including batch |
 | Cohere Rerank | `bedrock_connector_cohere_rerank_blueprint.md` | Reranking |
 | SageMaker | `sagemaker_connector_blueprint.md` | Custom fine-tuned models |
 | OpenAI | `openai_connector_chat_blueprint.md` | GPT-4o / GPT-4o-mini |
 
----
-
-## What You Need to Know Per Model (for `output_map` JSONPath)
-
-The only thing you must customize after copying a blueprint is your `output_map` JSONPath. Run `_predict` first to see the response shape:
-
-| Model Family | Output JSONPath (for `ml_inference` `output_map`) |
-|---|---|
-| **Titan Embedding** | `$.embedding` |
-| **Claude (Anthropic Messages)** | `$.content[0].text` |
-| **Nova (Bedrock Converse)** | `output.message.content[0].text` |
-| **Llama** | `generation` |
-| **Cohere Embed** | `$.embeddings` (batch) or `$.embeddings[0]` (single input) |
-| **OpenAI Chat** | `choices[0].message.content` |
-| **SageMaker** | Depends on your endpoint — always run `_predict` first |
-
-> **Note:** The `$.` prefix is optional — JsonPath reads `content[0].text` and `$.content[0].text` the same way. What matters is the root: for remote models (default `full_response_path: false`) the path starts at the model response body (`dataAsMap`); for local models (default `true`) it starts at the full `inference_results` envelope.
+The `input_map` keys in your pipeline must match the `${parameters.X}` names in the blueprint's `request_body`.
 
 ---
 
-## The `system_prompt` Override Pattern (Verified on AOSS NextGen)
+## Derive `output_map` from `_predict`
 
-One connector + one model can serve **multiple tasks** (sentiment, NER, summarization, query rewriting) by overriding the system prompt at the pipeline layer:
+Call the model directly before building any pipeline:
 
-**Connector** — define a default `system_prompt` in `parameters`:
+```http
+POST /_plugins/_ml/models/<model_id>/_predict
+{ "parameters": { "prompt": "Classify sentiment: The battery dies after 2 hours. Output one word." } }
+```
+
+Response (Claude):
+
 ```json
 {
-  "parameters": {
-    "system_prompt": "You are a helpful assistant.",
-    ...
-  },
-  "actions": [{
-    "request_body": "{...\"system\":\"${parameters.system_prompt}\",...}"
+  "inference_results": [{
+    "output": [{
+      "name": "response",
+      "dataAsMap": {
+        "content": [{"type": "text", "text": "negative"}],
+        "stop_reason": "end_turn"
+      }
+    }]
   }]
 }
 ```
 
-**Pipeline processor** — override per task via `model_config`:
+For a remote model, `output_map` JSONPath starts inside `dataAsMap` (`full_response_path: false`),
+so the path is `$.content[0].text`. The `$.` prefix is optional. For a local model
+(`full_response_path: true`) the path starts at the full `inference_results` envelope.
+
+### Output JSONPath per model family
+
+| Model family | `output_map` JSONPath |
+|---|---|
+| Titan Embedding | `$.embedding` |
+| Claude (Anthropic Messages) | `$.content[0].text` |
+| Nova (Bedrock Converse) | `output.message.content[0].text` |
+| Llama | `generation` |
+| Cohere Embed | `$.embeddings` (batch) or `$.embeddings[0]` (single input) |
+| OpenAI Chat | `choices[0].message.content` |
+| Local embedding model | `$.inference_results[0].output[0].data` |
+| SageMaker | Depends on the endpoint; run `_predict` |
+
+---
+
+## One model, many tasks: override `system_prompt`
+
+Give the connector a default `system_prompt` and override it per processor with `model_config`.
+One model registration then serves sentiment, NER, summarization, and query rewriting.
+
+Connector:
+
+```json
+{
+  "parameters": { "system_prompt": "You are a helpful assistant.", ... },
+  "actions": [{ "request_body": "{...\"system\":\"${parameters.system_prompt}\",...}" }]
+}
+```
+
+Processor:
+
 ```json
 {
   "ml_inference": {
     "model_id": "<model_id>",
-    "input_map": [{"prompt": "review"}],
+    "input_map":  [{"prompt": "review"}],
     "output_map": [{"sentiment": "$.content[0].text"}],
     "model_config": {
       "system_prompt": "You are a sentiment classifier. Reply with EXACTLY one word: positive, negative, or neutral."
@@ -85,35 +104,23 @@ One connector + one model can serve **multiple tasks** (sentiment, NER, summariz
 }
 ```
 
-This means: **register the model once, use it everywhere** with different prompts.
+With `temperature: 0` and a strict prompt ("one word only", "JSON only"), Claude Sonnet 4.6
+returned clean, parseable output in every verified run.
 
 ---
 
-## IAM Setup (Managed Service / AOSS)
+## Which model for which task
 
-For Bedrock connectors on AOS or AOSS:
+Pick the smallest model that does the job. Processors in one pipeline can use different models.
 
-1. **Connector role** needs:
-   - Trust policy: `"Service": "opensearchservice.amazonaws.com"` (AOS) or `"Service": "ml.opensearchservice.amazonaws.com"` (AOSS)
-   - Permission: `bedrock:InvokeModel` on the model/inference-profile ARN
-
-2. **AOSS additionally needs** in the data access policy:
-   - `aoss:CreateMLResource`
-   - `aoss:ExecuteMLResource`
-
-3. **The caller** creating the connector needs `iam:PassRole` to pass the connector role to OpenSearch
-
-4. **Cross-region inference profiles** (e.g., `us.anthropic.claude-sonnet-4-6`) are required for Claude 4.x on Bedrock — base model IDs are not directly invokable
-
----
-
-## Quick Decision: Which Model for Which Task?
-
-| Task | Recommended Model | Why |
+| Task | Model | Why |
 |---|---|---|
-| Auto-embedding (kNN search) | Titan Embed v2 | Purpose-built, fast, cheap |
-| Sentiment / language / intent | Nova Micro | Sub-second, lowest cost |
-| NER / summarization / PII redaction | Claude Haiku 4.5 | Good quality, fast enough for ingest |
-| Complex extraction / reasoning | Claude Sonnet 4.6 | Highest quality |
+| Embeddings (ingest or NL → kNN) | Titan Embed v2 (`amazon.titan-embed-text-v2:0`) | Purpose-built, fast, cheap |
+| Sentiment, language, intent, spell-correct | Nova Micro (`us.amazon.nova-micro-v1:0`) | Sub-second, lowest cost |
+| Per-hit scoring | Nova Micro or another small classifier | Per-hit calls add up |
+| NER, summarization, PII redaction at ingest | Claude Haiku 4.5 (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) | Good quality, fast enough for ingest |
+| RAG synthesis, complex extraction | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-6`) | Best instruction-following |
 | Custom fine-tuned model | SageMaker endpoint | Full control |
-| Quick prototype (non-AWS) | OpenAI GPT-4o-mini | Easy API key setup |
+| Prototype outside AWS | OpenAI GPT-4o-mini | API-key setup |
+
+Claude 4.x on Bedrock must be called through a cross-region inference profile (the `us.` IDs above).

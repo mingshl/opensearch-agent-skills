@@ -196,11 +196,27 @@ Design a search architecture. Read the relevant knowledge files:
 - [sparse_vector_models.md](sparse_vector_models.md)
 - [opensearch_semantic_search_guide.md](opensearch_semantic_search_guide.md)
 - [agentic_search_guide.md](agentic_search_guide.md)
-- [ml_inference_ingest_guide.md](ml_inference_ingest_guide.md)
-- [ml_inference_search_pipeline_guide.md](ml_inference_search_pipeline_guide.md)
 - [document_processing_guide.md](../../ingest/document-processing/document_processing_guide.md) (unstructured: source → chunks)
 - [local_ase.md](local_ase.md) (unstructured: chunks → searchable index, local target)
 - [unstructured_preset.md](unstructured_preset.md) (the unstructured bundle)
+- `ml_inference` pipelines: see below.
+
+#### When the plan calls a model inside a pipeline (`ml_inference`)
+
+Use `ml_inference` when the user wants a model called during ingest or search: LLM enrichment at index time, query rewriting, RAG answers, per-hit scoring. For plain text → kNN, prefer `text_embedding` + `neural` query ([opensearch_semantic_search_guide.md](opensearch_semantic_search_guide.md)).
+
+1. **Confirm the platform** (open source, Amazon OpenSearch Service, or Serverless NextGen; Classic Serverless has no `ml_inference`). Read [ml_inference_platforms.md](ml_inference_platforms.md). Serverless has no `model_input`, no `ext.ml_inference`, and no non-ML ingest processors.
+2. **Pick the stage** and read its guide:
+
+   | Stage | Model calls | Result | Guide |
+   |---|---|---|---|
+   | Ingest | Once per document, at write time | Stored in `_source`; filterable and aggregatable | [ml_inference_ingest_guide.md](ml_inference_ingest_guide.md) |
+   | Search request | Once per query | Rewrites the query before retrieval | [ml_inference_search_pipeline_guide.md](ml_inference_search_pipeline_guide.md) |
+   | Search response | Once per request (`one_to_one: false`) or once per hit (`true`) | Added to the response; not stored | [ml_inference_search_pipeline_guide.md](ml_inference_search_pipeline_guide.md) |
+
+   Stages combine: precompute fields at ingest, rewrite the query at request time, add a RAG answer at response time.
+3. **Build the connector** from a blueprint and choose the model: [connector_patterns.md](connector_patterns.md). Worked examples: [verified_examples.md](verified_examples.md).
+4. **Verify in order:** `_predict` on the model → `_simulate` (ingest) or `verbose_pipeline=true` (search) → one real document or query.
 
 Present the plan and wait for user approval.
 

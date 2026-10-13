@@ -1,15 +1,46 @@
 # ML Inference Search Pipeline Guide
 
-Use this guide when the user wants to call a machine learning model **at query time or response time** — query rewriting, intent detection, multilingual routing, query expansion, LLM re-ranking, or grounded RAG answer synthesis. The same `ml_inference` processor handles all of these via two variants: **search request** processor and **search response** processor.
+Use this guide when the user wants a model called **at query time or response time**: query rewriting, intent detection, multilingual routing, query expansion, LLM re-ranking, or grounded RAG answers. The `ml_inference` processor has two search variants: the **request** processor and the **response** processor.
 
-> Related guides
-> - For ingest-time enrichment (auto-embeddings, classification at index time), see [`ml_inference_ingest_guide.md`](ml_inference_ingest_guide.md) instead.
-> - For the simpler pre-built `neural` query (text → kNN), see [`opensearch_semantic_search_guide.md`](opensearch_semantic_search_guide.md). Use `ml_inference` request processor only when you need advanced behavior `neural` query can't express.
-> - For agentic search (LLM-driven multi-step retrieval), see [`agentic_search_guide.md`](agentic_search_guide.md). `ml_inference` is a lighter, single-shot tool — use it when you need predictable inline LLM enrichment, not multi-step planning.
+> Related
+> - Official references: [ML inference search request processor](https://docs.opensearch.org/latest/search-plugins/search-pipelines/ml-inference-search-request/), [ML inference search response processor](https://docs.opensearch.org/latest/search-plugins/search-pipelines/ml-inference-search-response/), [rerank processor](https://docs.opensearch.org/latest/search-plugins/search-pipelines/rerank-processor/). This guide covers the patterns and pitfalls they leave out.
+> - Platform differences (AOSS NextGen limits, IAM): [ml_inference_platforms.md](ml_inference_platforms.md)
+> - Connector blueprints, output JSONPath per model, model choice: [connector_patterns.md](connector_patterns.md)
+> - Worked examples (per-hit enrichment, query rewrite with `verbose_pipeline` trace): [verified_examples.md](verified_examples.md)
+> - Index-time enrichment: [ml_inference_ingest_guide.md](ml_inference_ingest_guide.md)
+> - Plain text → kNN: use the `neural` query ([opensearch_semantic_search_guide.md](opensearch_semantic_search_guide.md)). Use the `ml_inference` request processor only when `neural` can't express what you need.
+> - Multi-step LLM retrieval: [agentic_search_guide.md](agentic_search_guide.md). `ml_inference` is a single inline call, not multi-step planning.
 
 ---
 
-## 1. The three substitution namespaces
+## 1. Decision flow
+
+When a user asks for query-time or response-time LLM enrichment:
+
+1. **What stage?**
+   - Before retrieval, modify the query → request processor
+   - After retrieval, enrich the response → response processor
+   - At index time → [ml_inference_ingest_guide.md](ml_inference_ingest_guide.md)
+
+2. **Single output for the whole request, or per-hit?**
+   - Whole request (RAG synthesis, response-level summary) → `one_to_one: false` + `$._request.*` to read the question. Output is replicated across hits.
+   - Re-ranking hits → use the `rerank` response processor. `by_field` (sort by an existing numeric field) and cross-encoder `ml_opensearch` are both verified on AOSS NextGen — see the re-ranking section.
+   - Per-hit scoring via an LLM that batches → `one_to_one: false` + `results[*]` in `output_map` to fan out the array (one API call). Subject to the same connector/model caveats — verify with `verbose_pipeline=true`.
+   - Per hit, model can't batch (rare; custom classifier with single-doc API) → `one_to_one: true`. N API calls.
+
+3. **Does the model output drive the entire query, or just a slot?**
+   - Entire query (NL → kNN where the vector IS the query) → `query_template` (Pattern A in Section 3)
+   - Just a slot (add a filter to user's existing query) → `output_map` JsonPath rewrite (Pattern B in Section 3)
+
+4. **Are we on AOSS NextGen?**
+   - Yes → read [ml_inference_platforms.md](ml_inference_platforms.md). No `model_input`, no `ext.ml_inference.*`, no `collapse`. Read errors with `verbose_pipeline=true`.
+   - No (managed OS or self-hosted) → all upstream features available.
+
+5. **Pick the smallest model that does the job** — see [connector_patterns.md](connector_patterns.md#which-model-for-which-task).
+
+---
+
+## 2. The three substitution namespaces
 
 The `ml_inference` processor has three places where templates substitute values, each with its own scope. Mixing them up is the most common configuration error.
 
@@ -23,7 +54,7 @@ The `ml_inference` processor has three places where templates substitute values,
 
 ---
 
-## 2. Search request processor — query rewriting
+## 3. Search request processor — query rewriting
 
 ### When to use
 
@@ -97,11 +128,11 @@ The pipeline overwrites `"PLACEHOLDER"` with the detected language code. The lit
 
 3. **`query_template` only sees `output_map` keys.** `${input_map.X}` substitution is supported only inside `model_input` — and `model_input` is **not supported on AOSS NextGen**. If you need to replay the user's text in the rewritten query alongside the model output, use Pattern B (write into placeholder slots) instead of Pattern A.
 
-4. **AOSS NextGen does not register the `ext.ml_inference` extension.** Use `$._request.<jsonpath>` syntax (see Section 3) inside response processors instead — `ext.ml_inference` works only on managed/self-hosted OpenSearch.
+4. **AOSS NextGen does not register the `ext.ml_inference` extension.** Use `$._request.<jsonpath>` syntax (see Section 4) inside response processors instead — `ext.ml_inference` works only on managed/self-hosted OpenSearch.
 
 ---
 
-## 3. Search response processor — RAG and per-hit enrichment
+## 4. Search response processor — RAG and per-hit enrichment
 
 ### When to use
 
@@ -240,7 +271,7 @@ To set up cross-encoder rerank on AOSS NextGen:
 
 Upstream reference for the full pattern: [Cohere Rerank tutorial](https://github.com/opensearch-project/ml-commons/blob/main/docs/tutorials/ml_inference/rerank/ml_Inference_with_Cohere_Rerank_model.md) and the [rerank processor docs](https://docs.opensearch.org/latest/search-plugins/search-pipelines/rerank-processor/).
 
-**Note on AOSS NextGen:** the `rerank` response processor type is in the curated allowlist (pipeline creation succeeds and the processor executes), distinct from `collapse` which is not (returns `400`). See Section 4 for the full allowlist.
+**Note on AOSS NextGen:** the `rerank` response processor type is in the curated allowlist (pipeline creation succeeds and the processor executes), distinct from `collapse` which is not (returns `400`). See [ml_inference_platforms.md](ml_inference_platforms.md) for the full allowlist.
 
 ### Debugging search pipeline issues
 
@@ -256,255 +287,6 @@ When a search pipeline returns an error, follow this chain:
 |---|---|---|
 | `Invalid payload: parameter placeholder not filled` | `input_map` key doesn't match the connector's `${parameters.X}` placeholder | Align the `input_map` key name with the connector template placeholder |
 | RAG answer appears as a literal field named `_source["ext.ml_inference.rag_answer"]` (with the dot in the key) on every hit | AOSS fork of `MLInferenceSearchResponseProcessor` lacks the `EXTENSION_PREFIX` write path. Output keys starting with `ext.ml_inference.` fall through to per-hit `_source` instead of the response-level `ext` block. | Rename the `output_map` key to a plain identifier like `rag_answer`. Read it from any one hit. |
-| Rewritten query has `${input_map.X}` left as a literal string | The placeholder was used in the wrong field. `${input_map.X}` substitutes only inside `model_input`. `query_template` (request processor) substitutes only `output_map` keys; `model_config.prompt` (response processor) substitutes `${parameters.X}` and `${parameters.X.toString()}`. | If you wrote `${input_map.X}` in a `query_template`, switch to `${parameters.X}` and remember the input_map key must match a connector parameter. AOSS NextGen also doesn't expose `model_input`, so the workaround on AOSS is to bake the prompt into the connector's `request_body` and reference values via `${parameters.X}`. See Section 1. |
+| Rewritten query has `${input_map.X}` left as a literal string | The placeholder was used in the wrong field. `${input_map.X}` substitutes only inside `model_input`. `query_template` (request processor) substitutes only `output_map` keys; `model_config.prompt` (response processor) substitutes `${parameters.X}` and `${parameters.X.toString()}`. | If you wrote `${input_map.X}` in a `query_template`, switch to `${parameters.X}` and remember the input_map key must match a connector parameter. AOSS NextGen also doesn't expose `model_input`, so the workaround on AOSS is to bake the prompt into the connector's `request_body` and reference values via `${parameters.X}`. See Section 2. |
 | `Invalid processor type collapse` when creating a search pipeline | The `collapse` response processor isn't in the AOSS NextGen allowlist. | Use `rerank` (which is allowlisted) or post-process client-side. |
 | Bulk RAG response duplicates the same answer on every hit | This is by design when `output_map` writes to a `_source` field with `one_to_one: false` — one answer is replicated across all hits. Read it from any one hit; render the rest as supporting sources (Perplexity / Google AI Overviews UX pattern). | Not a bug — read from any hit |
-
----
-
-## 4. AOSS NextGen specifics
-
-The AOSS fork of `MLInferenceSearchRequestProcessor` and `MLInferenceSearchResponseProcessor` has been trimmed compared to upstream open-source ml-commons. When the user is on AOSS NextGen, apply these constraints:
-
-| Feature | Open-source | AOSS NextGen |
-|---|---|---|
-| `ml_inference` ingest, request, response processors | Y | Y (NextGen only — Classic does not support `ml_inference`) |
-| `model_input` field on processors | Y | N Not supported. Pass model parameters via the connector's `${parameters.X}` template instead |
-| `ext.ml_inference.X` write to response-level extension | Y | N Falls through to per-hit `_source` (silent fallback) |
-| `$._request.<jsonpath>` reads from request body | Y | Y |
-| `$.X` JSONPath in output_map (per-hit `_source` write) | Y | Y |
-| `query.X` JSONPath in output_map (rewrite existing slot) | Y | Y — but the path must already exist in the request body |
-| `ext.ml_inference` SearchExtBuilder for passing params via the request `ext` block | Y | N Not registered on AOSS NextGen (typically surfaces as a `NamedWriteable not found` error). Use `$._request.<jsonpath>` syntax to read from the request body instead. |
-| `set`, `script`, `remove` ingest processors | Y | N Curated allowlist — only `ml_inference`, `text_embedding`, and other ML-specific processors are exposed |
-| `collapse` response processor | Y | N Returns `400: Invalid processor type collapse` |
-| Bedrock cross-region inference profiles (`us.amazon.nova-micro-v1:0`, `us.anthropic.claude-...`) | Y | Y |
-
----
-
-## 5. Choosing models
-
-Pick the smallest model that handles the task. Different processors can use different models in the same pipeline.
-
-| Task | Recommended Bedrock model | Why |
-|---|---|---|
-| Text embedding (NL → kNN) | `amazon.titan-embed-text-v2:0` (1024 dim, on-demand) | Fast, on-demand FM, well-supported by built-in pre/post-process functions |
-| Language detection, intent classification, spell-correct | `us.amazon.nova-micro-v1:0` (cross-region inference profile) | Purpose-built for low-latency text classification; sub-second median latency |
-| Per-hit re-ranking | `us.amazon.nova-micro-v1:0` or any small classifier | Per-hit calls accumulate latency, so smaller is better |
-| RAG answer synthesis | `us.anthropic.claude-sonnet-4-6` or `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Reasoning-quality matters more than latency for synthesis |
-| Multi-step RAG with citations | Claude Sonnet 4.6 | Best instruction-following for grounded synthesis prompts |
-
-For non-Bedrock connectors (SageMaker, OpenAI, self-hosted), the same shape applies — only the connector's `url` and `request_body` change. The pipeline itself is connector-agnostic.
-
----
-
-## 6. Verification workflow
-
-For every pipeline you build, verify in this order:
-
-1. **Direct `_predict` first.** Call the model directly to confirm the connector + IAM are good before adding any pipeline complexity:
-   ```bash
-   POST /_plugins/_ml/models/<model_id>/_predict
-   { "parameters": { "text": "Bonjour le monde" } }
-   ```
-2. **Pipeline `_simulate`** (ingest only — request/response pipelines do not have a simulate endpoint).
-3. **`verbose_pipeline=true`** on the actual search to see each processor's input and output:
-   ```http
-   POST /<index>/_search?search_pipeline=<name>&verbose_pipeline=true
-   { ... }
-   ```
-   The `processor_results` array shows each processor's `status`, `error`, `input_data`, and `output_data`. This is the single most useful debugging tool — always reach for it before assuming a permission or model issue.
-
----
-
-## 7. Decision flow
-
-When a user asks for query-time or response-time LLM enrichment:
-
-1. **What stage?**
-   - Before retrieval, modify the query → request processor
-   - After retrieval, enrich the response → response processor
-   - At index time → use ingestion skill, not this one
-
-2. **Single output for the whole request, or per-hit?**
-   - Whole request (RAG synthesis, response-level summary) → `one_to_one: false` + `$._request.*` to read the question. Output is replicated across hits.
-   - Re-ranking hits → use the `rerank` response processor. `by_field` (sort by an existing numeric field) and cross-encoder `ml_opensearch` are both verified on AOSS NextGen — see the re-ranking section.
-   - Per-hit scoring via an LLM that batches → `one_to_one: false` + `results[*]` in `output_map` to fan out the array (one API call). Subject to the same connector/model caveats — verify with `verbose_pipeline=true`.
-   - Per hit, model can't batch (rare; custom classifier with single-doc API) → `one_to_one: true`. N API calls.
-
-3. **Does the model output drive the entire query, or just a slot?**
-   - Entire query (NL → kNN where the vector IS the query) → `query_template` (Pattern A in Section 2)
-   - Just a slot (add a filter to user's existing query) → `output_map` JsonPath rewrite (Pattern B in Section 2)
-
-4. **Are we on AOSS NextGen?**
-   - Yes → review Section 4 constraints. No `model_input`, no `ext.ml_inference.*`, no `collapse`. Read errors with `verbose_pipeline=true`.
-   - No (managed OS or self-hosted) → all upstream features available.
-
-5. **Pick the smallest model that does the job** — see Section 5.
-
----
-
-## 8. Verified Examples (AOSS NextGen — Claude Sonnet 4.6)
-
-All examples verified end-to-end on a live AOSS NextGen collection (us-east-1) using the same connector and model described in [`verified_examples.md`](verified_examples.md).
-
-### 8a. Search Response Processor — Per-Hit Sentiment + NER
-
-One model, two response processors chained. Each overrides `system_prompt` via `model_config`:
-
-```http
-PUT /_search/pipeline/sonnet46_ner_sentiment
-{
-  "response_processors": [
-    {
-      "ml_inference": {
-        "tag": "sentiment_step",
-        "model_id": "<model_id>",
-        "input_map": [{"prompt": "review"}],
-        "output_map": [{"sentiment": "$.content[0].text"}],
-        "model_config": {
-          "system_prompt": "You are a sentiment classifier. Reply with EXACTLY one lowercase word: positive, negative, or neutral. No punctuation."
-        },
-        "one_to_one": true
-      }
-    },
-    {
-      "ml_inference": {
-        "tag": "ner_step",
-        "model_id": "<model_id>",
-        "input_map": [{"prompt": "review"}],
-        "output_map": [{"entities_json": "$.content[0].text"}],
-        "model_config": {
-          "system_prompt": "You are an NER extractor. Return ONLY a compact JSON object with keys PERSON, ORG, LOCATION, PRODUCT, DATE; each value an array of strings. No prose, no markdown, just JSON."
-        },
-        "one_to_one": true
-      }
-    }
-  ]
-}
-```
-
-**Key points:**
-- `one_to_one: true` — runs the model once per hit (not batched)
-- `model_config.system_prompt` overrides the connector default — one model serves multiple tasks
-- Output path `$.content[0].text` — Claude Anthropic Messages format
-
-**Verified results:**
-
-| id | sentiment | PERSON | ORG | LOCATION | PRODUCT |
-|---|---|---|---|---|---|
-| r1 | positive | — | United Airlines | Paris | — |
-| r2 | neutral | Tim Cook | Apple | — | MacBook Pro |
-| r3 | negative | — | Comcast | Seattle | — |
-| r4 | positive | — | Toyota | Bay Area | Toyota Camry |
-
----
-
-### 8b. Search Request Processor — Natural Language → Keyword Query Rewrite
-
-Rewrites a free-form sentiment phrase into the exact stored keyword (`positive`/`negative`/`neutral`) before the search executes. Uses `output_map` to overwrite the query field in-place (Pattern B).
-
-```http
-PUT /_search/pipeline/sonnet46_request_sentiment_classify
-{
-  "request_processors": [
-    {
-      "ml_inference": {
-        "tag": "sentiment_classify_request",
-        "model_id": "<model_id>",
-        "input_map":  [{"prompt": "query.term.sentiment.value"}],
-        "output_map": [{"query.term.sentiment.value": "$.content[0].text"}],
-        "model_config": {
-          "system_prompt": "You are a sentiment classifier. Given a short natural-language phrase describing how a reviewer feels, output EXACTLY one lowercase word: positive, negative, or neutral. No punctuation. No explanation."
-        }
-      }
-    }
-  ]
-}
-```
-
-**How it works:**
-- `input_map` reads `query.term.sentiment.value` from the search request body → feeds it to model as `prompt`
-- `output_map` writes model output back to `query.term.sentiment.value` → mutates the query in-flight
-- The term query now matches the exact keyword stored in the index
-
-**Verified with `verbose_pipeline=true`:**
-
-```http
-POST /sonnet46-reviews-ingest/_search?search_pipeline=sonnet46_request_sentiment_classify&verbose_pipeline=true
-{
-  "size": 10,
-  "_source": ["id","review","sentiment"],
-  "query": { "term": { "sentiment": { "value": "really bad and frustrating" } } }
-}
-```
-
-**`processor_results` trace:**
-```json
-{
-  "processor_name": "ml_inference",
-  "tag": "sentiment_classify_request",
-  "duration_millis": 1234,
-  "status": "success",
-  "input_data":  { "query": { "term": { "sentiment": { "value": "really bad and frustrating" } } } },
-  "output_data": { "query": { "term": { "sentiment": { "value": "negative" } } } }
-}
-```
-
-| Input phrase | Rewrite | Hits |
-|---|---|---|
-| `really bad and frustrating` | `negative` | 1 (r3) |
-| `overjoyed and would recommend` | `positive` | 2 (r1, r4) |
-| `meh, didnt care either way` | `neutral` | 1 (r2) |
-
----
-
-### 8c. Tip: Run `_predict` First to Derive Your `output_map` JSONPath
-
-Before writing any search pipeline, call the model directly:
-
-```http
-POST /_plugins/_ml/models/<model_id>/_predict
-{
-  "parameters": {
-    "prompt": "Classify sentiment: The battery dies after 2 hours. Output one word."
-  }
-}
-```
-
-**Response (Claude):**
-```json
-{
-  "inference_results": [{
-    "output": [{
-      "name": "response",
-      "dataAsMap": {
-        "content": [{"type": "text", "text": "negative"}],
-        "stop_reason": "end_turn"
-      }
-    }]
-  }]
-}
-```
-
-From this response, you can see the text lives at `content[0].text` inside `dataAsMap`. So:
-- **Search response/request processor `output_map`:** `"$.content[0].text"`
-- **Verify:** use `verbose_pipeline=true` on your first test query to confirm the value lands correctly
-
-**The workflow:** `_predict` → inspect output JSON → write `output_map` path → test with `verbose_pipeline=true`
-
----
-
-### 8d. Three Pipeline Shapes — When to Use Which
-
-| Aspect | Ingest pipeline | Search response processor | Search request processor |
-|---|---|---|---|
-| When LLM runs | At write time, once per doc | At search time, once per hit | At search time, once per query |
-| Mutates | `_source` of the indexed doc | Search response only | Search request body |
-| Persisted? | Yes, in index | No | No, ephemeral |
-| Cost per query | 0 LLM calls | N × hits | 1 LLM call |
-| Best for | Filterable/aggregatable enrichment, embeddings | RAG answers, per-hit summaries | Query rewriting, intent classification, embedding user query for kNN |
-
-**Compose all three:**
-- Ingest pipeline pre-computes structured fields (sentiment keyword, embeddings, NER for filters)
-- Request processor rewrites or vectorizes the user query
-- Response processor decorates hits with per-hit LLM summary or RAG answer
