@@ -46,15 +46,15 @@ The only thing you must customize after copying a blueprint is your `output_map`
 | **Claude (Anthropic Messages)** | `$.content[0].text` |
 | **Nova (Bedrock Converse)** | `output.message.content[0].text` |
 | **Llama** | `generation` |
-| **Cohere Embed** | `$.embeddings[0]` |
+| **Cohere Embed** | `$.embeddings` (batch) or `$.embeddings[0]` (single input) |
 | **OpenAI Chat** | `choices[0].message.content` |
 | **SageMaker** | Depends on your endpoint — always run `_predict` first |
 
-> **Note:** Ingest processors use `$.` prefix. Search response processors omit it. See `ml_inference_ingest_guide.md` Section 6 gotcha 3 for details.
+> **Note:** The `$.` prefix is optional — JsonPath reads `content[0].text` and `$.content[0].text` the same way. What matters is the root: for remote models (default `full_response_path: false`) the path starts at the model response body (`dataAsMap`); for local models (default `true`) it starts at the full `inference_results` envelope.
 
 ---
 
-## The `system_prompt` Override Pattern (Verified on AOSS V2)
+## The `system_prompt` Override Pattern (Verified on AOSS NextGen)
 
 One connector + one model can serve **multiple tasks** (sentiment, NER, summarization, query rewriting) by overriding the system prompt at the pipeline layer:
 

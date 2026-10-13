@@ -4,7 +4,7 @@ The `ml_inference` processor calls a registered ML model during ingest (index ti
 
 For search-time specific patterns (request/response processors), see [`ml_inference_search_pipeline_guide.md`](ml_inference_search_pipeline_guide.md).
 
-For end-to-end verified examples on AOSS V2 (ingest, search request, search response), see [`verified_examples.md`](verified_examples.md).
+For end-to-end verified examples on AOSS NextGen (ingest, search request, search response), see [`verified_examples.md`](verified_examples.md).
 
 For connector blueprints and model selection, see [`connector_patterns.md`](connector_patterns.md).
 
@@ -53,7 +53,7 @@ Every `ml_inference` processor has these fields:
     "ignore_missing": false,
     "ignore_failure": false,
     "one_to_one": false,
-    "full_response_path": true
+    "full_response_path": false
   }
 }
 ```
@@ -70,7 +70,7 @@ Every `ml_inference` processor has these fields:
 | `ignore_missing` | N | If `true`, skip the processor when the source field doesn't exist in the document (default: `false`) |
 | `ignore_failure` | N | If `true`, continue ingestion even if the model call fails (default: `false`) |
 | `one_to_one` | N | **Search response processor only.** If `true`, runs the model once per hit. If `false` (default), batches all hits into one model call |
-| `full_response_path` | N | If `true` (default for ingest), `output_map` JSONPath starts from the root of model response. If `false`, starts from `inference_results[0].output[0].dataAsMap` |
+| `full_response_path` | N | If `false` (default for remote models), `output_map` JSONPath starts from the model response body (`inference_results[0].output[0].dataAsMap`). If `true` (default for local models), it starts from the full `inference_results` envelope |
 
 ---
 
@@ -105,13 +105,15 @@ The model runs inside OpenSearch (e.g., pre-trained sentence transformers, spars
 Register model (function_name: "text_embedding" / "sparse_encoding") → Deploy → Use
 ```
 
-- `input_map` keys are the model's native input field names (typically `text_docs` for embedding models)
-- `output_map` navigates the local model's response format
-- Local models have a fixed response shape — check with `_predict` first
+- `function_name` and `model_input` are required for local models — the processor rejects a local model without `model_input`
+- `output_map` navigates the full `inference_results` envelope (`full_response_path` defaults to `true` for local models)
+- Local models are not available on AOSS NextGen, which also does not support `model_input`
 
 **Example (local embedding model):**
 ```json
 {
+  "function_name": "text_embedding",
+  "model_input": "{ \"text_docs\": ${input_map.text_docs} }",
   "input_map": [{ "text_docs": "description" }],
   "output_map": [{ "description_embedding": "$.inference_results[0].output[0].data" }]
 }
@@ -214,11 +216,11 @@ If the model returns an array of vectors, writes the entire array to `_source.ch
 | Claude (Anthropic Messages) | `$.content[0].text` |
 | Nova (Converse API) | `output.message.content[0].text` |
 | Llama | `generation` |
-| Cohere Embed | `$.embeddings` |
+| Cohere Embed | `$.embeddings` (batch) or `$.embeddings[0]` (single input) |
 | OpenAI Chat | `choices[0].message.content` |
 | Local embedding model | `$.inference_results[0].output[0].data` |
 
-> **Tip:** `$.` prefix behavior differs by processor type. Ingest processors use `$.` to root at the full response. Search response processors omit `$.` (roots at `dataAsMap` automatically). Always verify with `_predict` + `_simulate`.
+> **Note:** The `$.` prefix is optional — JsonPath reads `content[0].text` and `$.content[0].text` the same way. What matters is the root: for remote models (default `full_response_path: false`) the path starts at the model response body (`dataAsMap`); for local models (default `true`) it starts at the full `inference_results` envelope.
 
 ---
 
@@ -379,7 +381,7 @@ For full platform comparison, see [verified_examples.md](verified_examples.md) �
 
 2. **Raw string substitution.** Field values containing quotes, backslashes, or newlines can break the connector's `request_body` JSON. Always `_simulate` with dirty data (quotes, newlines) before production ingest.
 
-3. **`output_map` JSONPath differs between ingest and search response.** Ingest uses `$.` prefix; search response omits it. Always verify with `_predict` first.
+3. **`output_map` JSONPath is rooted at the model response body for remote models.** Derive the path from the `dataAsMap` block of a `_predict` response. The `$.` prefix is optional.
 
 4. **Ingest pipeline does NOT auto-reindex.** Changing the processor config only affects new documents. Use `_reindex` for backfill.
 

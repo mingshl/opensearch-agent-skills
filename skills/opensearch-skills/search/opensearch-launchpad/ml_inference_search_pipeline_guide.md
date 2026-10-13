@@ -116,7 +116,7 @@ The user wants the pipeline to **call an LLM after retrieval** with the hits as 
 
 | Setting | Behavior | Use it for |
 |---|---|---|
-| `one_to_one: false` (default) | One model call sees ALL hits. The processor aggregates each hit's `input_map` field into a `List<String>`. Use `${parameters.X.toString()}` to embed the list as a single string slot, OR use `${parameters.X}` (no quotes around it in the connector body) when the model's API expects a JSON array directly. Output is written either as a single value replicated across hits (string output) or fanned out per hit using `results[*]` indexing (array-aligned output). | **Cross-document synthesis** (RAG, summarization across results) AND **batch per-hit scoring** (the array fan-out pattern; see the rerank section for an AOSS verification caveat) |
+| `one_to_one: false` (default) | One model call sees ALL hits. The processor aggregates each hit's `input_map` field into a `List<String>`. Use `${parameters.X.toString()}` to embed the list as a single string slot, OR use `${parameters.X}` (no quotes around it in the connector body) when the model's API expects a JSON array directly. Output is written either as a single value replicated across hits (string output) or fanned out per hit using `results[*]` indexing (array-aligned output). | **Cross-document synthesis** (RAG, summarization across results) AND **batch per-hit scoring** (the array fan-out pattern) |
 | `one_to_one: true` | One model call per hit. Inputs are scalar (single hit's fields). Output is per-hit. | **Per-hit enrichment when the model can't batch** — e.g., a custom classifier whose API only accepts one document at a time |
 
 ### Cross-document RAG (the most common use case)
@@ -194,7 +194,7 @@ Every hit's `_source` carries the **same** `rag_answer` (one model call, output 
 The `rerank` response processor (a distinct processor, not `ml_inference`) reorders hits and rewrites their `_score`. It has two rerank types:
 
 - **`by_field`** — reorders by a numeric field already present on each hit. No model call. **Verified working on AOSS NextGen.**
-- **`ml_opensearch`** — calls a cross-encoder model to score each (query, document) pair. Needs a registered cross-encoder. **Documented upstream; not verified end-to-end on AOSS NextGen in our testing (see caveat below).**
+- **`ml_opensearch`** — calls a cross-encoder model to score each (query, document) pair. Needs a registered cross-encoder. **Verified working on AOSS NextGen** with Cohere Rerank and Amazon Bedrock Rerank.
 
 #### `by_field` rerank — verified on AOSS NextGen
 
@@ -327,7 +327,7 @@ When a user asks for query-time or response-time LLM enrichment:
 
 2. **Single output for the whole request, or per-hit?**
    - Whole request (RAG synthesis, response-level summary) → `one_to_one: false` + `$._request.*` to read the question. Output is replicated across hits.
-   - Re-ranking hits → use the `rerank` response processor. `by_field` (sort by an existing numeric field) is verified on AOSS NextGen; cross-encoder (`ml_opensearch`) is accepted but unverified end-to-end on AOSS — see the re-ranking section.
+   - Re-ranking hits → use the `rerank` response processor. `by_field` (sort by an existing numeric field) and cross-encoder `ml_opensearch` are both verified on AOSS NextGen — see the re-ranking section.
    - Per-hit scoring via an LLM that batches → `one_to_one: false` + `results[*]` in `output_map` to fan out the array (one API call). Subject to the same connector/model caveats — verify with `verbose_pipeline=true`.
    - Per hit, model can't batch (rare; custom classifier with single-doc API) → `one_to_one: true`. N API calls.
 
@@ -343,9 +343,9 @@ When a user asks for query-time or response-time LLM enrichment:
 
 ---
 
-## 8. Verified Examples (AOSS V2 Beta — Claude Sonnet 4.6)
+## 8. Verified Examples (AOSS NextGen — Claude Sonnet 4.6)
 
-All examples verified end-to-end on a live AOSS V2 collection (us-east-1) using the same connector and model described in [`verified_examples.md`](verified_examples.md).
+All examples verified end-to-end on a live AOSS NextGen collection (us-east-1) using the same connector and model described in [`verified_examples.md`](verified_examples.md).
 
 ### 8a. Search Response Processor — Per-Hit Sentiment + NER
 
@@ -358,7 +358,7 @@ PUT /_search/pipeline/sonnet46_ner_sentiment
     {
       "ml_inference": {
         "tag": "sentiment_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map": [{"prompt": "review"}],
         "output_map": [{"sentiment": "$.content[0].text"}],
         "model_config": {
@@ -370,7 +370,7 @@ PUT /_search/pipeline/sonnet46_ner_sentiment
     {
       "ml_inference": {
         "tag": "ner_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map": [{"prompt": "review"}],
         "output_map": [{"entities_json": "$.content[0].text"}],
         "model_config": {
@@ -410,7 +410,7 @@ PUT /_search/pipeline/sonnet46_request_sentiment_classify
     {
       "ml_inference": {
         "tag": "sentiment_classify_request",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map":  [{"prompt": "query.term.sentiment.value"}],
         "output_map": [{"query.term.sentiment.value": "$.content[0].text"}],
         "model_config": {

@@ -1,8 +1,7 @@
-# Verified Examples — ML Inference Processors on AOSS V2
+# Verified Examples — ML Inference Processors on AOSS NextGen
 
-All examples in this file were verified end-to-end on a live AOSS V2 beta collection
-(us-east-1, account 631352388807) using Claude Sonnet 4.6 via Bedrock cross-region
-inference profile. Generated 2026-05-12.
+All examples in this file were verified end-to-end on a live AOSS NextGen collection
+(us-east-1) using Claude Sonnet 4.6 via a Bedrock cross-region inference profile. Generated 2026-05-12.
 
 ---
 
@@ -45,7 +44,7 @@ POST /_plugins/_ml/connectors/_create
 }
 ```
 
-**Response:** `{ "connector_id": "134d9123-6ea8-4902-97f8-92bcedab4830" }`
+**Response:** `{ "connector_id": "<connector_id>" }`
 
 **Gotcha:** First attempt without `credential.roleArn` failed with:
 ```json
@@ -61,16 +60,16 @@ POST /_plugins/_ml/models/_register?deploy=true
   "name": "Claude Sonnet 4.6",
   "function_name": "remote",
   "description": "Claude Sonnet 4.6 via Bedrock cross-region inference profile",
-  "connector_id": "134d9123-6ea8-4902-97f8-92bcedab4830"
+  "connector_id": "<connector_id>"
 }
 ```
 
-**Response:** `{ "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747" }`
+**Response:** `{ "model_id": "<model_id>" }`
 
 ### Direct predict sanity check
 
 ```http
-POST /_plugins/_ml/models/5f45692d-f529-4fee-b382-6a0ae263a747/_predict
+POST /_plugins/_ml/models/<model_id>/_predict
 {
   "parameters": {
     "prompt": "Classify the sentiment of this review as exactly one word: positive, negative, or neutral. Review: \"The battery dies after 2 hours and customer support never responded. Total waste of money.\""
@@ -96,7 +95,7 @@ PUT /_ingest/pipeline/sonnet46_ingest_ner_sentiment
     {
       "ml_inference": {
         "tag": "sentiment_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map":  [{"prompt": "review"}],
         "output_map": [{"sentiment": "$.content[0].text"}],
         "model_config": {
@@ -107,7 +106,7 @@ PUT /_ingest/pipeline/sonnet46_ingest_ner_sentiment
     {
       "ml_inference": {
         "tag": "ner_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map":  [{"prompt": "review"}],
         "output_map": [{"entities_json": "$.content[0].text"}],
         "model_config": {
@@ -198,7 +197,7 @@ PUT /_search/pipeline/sonnet46_ner_sentiment
     {
       "ml_inference": {
         "tag": "sentiment_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map": [{"prompt": "review"}],
         "output_map": [{"sentiment": "$.content[0].text"}],
         "model_config": {
@@ -210,7 +209,7 @@ PUT /_search/pipeline/sonnet46_ner_sentiment
     {
       "ml_inference": {
         "tag": "ner_step",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map": [{"prompt": "review"}],
         "output_map": [{"entities_json": "$.content[0].text"}],
         "model_config": {
@@ -223,7 +222,7 @@ PUT /_search/pipeline/sonnet46_ner_sentiment
 }
 ```
 
-**Key difference from ingest:** `one_to_one: true` is required for search response processors to run per-hit.
+**Key difference from ingest:** `one_to_one: true` makes one model call per hit, so each hit gets its own result. With the default `false`, all hits are sent to the model in a single call.
 
 ### Query with the pipeline
 
@@ -245,7 +244,7 @@ PUT /_search/pipeline/sonnet46_request_sentiment_classify
     {
       "ml_inference": {
         "tag": "sentiment_classify_request",
-        "model_id": "5f45692d-f529-4fee-b382-6a0ae263a747",
+        "model_id": "<model_id>",
         "input_map":  [{"prompt": "query.term.sentiment.value"}],
         "output_map": [{"query.term.sentiment.value": "$.content[0].text"}],
         "model_config": {
@@ -305,12 +304,12 @@ POST /sonnet46-reviews-ingest/_search?search_pipeline=sonnet46_request_sentiment
 
 ---
 
-## AOSS V2 Gotchas (verified)
+## AOSS NextGen Gotchas (verified)
 
 1. **Pipeline creation is eventually consistent.** `PUT` returns `acknowledged:true` but `GET` returns `{}` for ~30s. Plan for retry in automation.
 2. **`credential.roleArn` is mandatory.** AOSS does not auto-inherit caller credentials for outbound Bedrock calls.
 3. **Cross-region inference profile is mandatory** for Claude 4.x — base model IDs are not invokable directly.
-4. **All 4xx errors are masked as 403 Forbidden.** Use `_simulate` or reproduce on open-source 3.x to see the real error.
+4. **Errors surface the upstream status and message** (non-429 4xx are no longer rewritten to 403). Use `_simulate` (ingest) or `verbose_pipeline=true` (search) to see which processor failed.
 5. **`model_config.system_prompt` overrides the connector's default** — one model serves multiple tasks by swapping prompts at the pipeline layer.
 6. **`temperature: 0` + strict system prompt** gives clean, parseable output. Sonnet 4.6 followed every "JSON only / one-word only" constraint.
 7. **`verbose_pipeline=true`** on search queries shows `input_data` and `output_data` for every processor — use it for debugging request processors.
@@ -334,11 +333,11 @@ The `ml_inference` processor works across all three platforms, but each has uniq
 | **`ext.ml_inference` extension** | ✅ Supported (response processors) | ✅ Supported | ❌ **Not supported** — use `$._request.<path>` instead |
 | **`set`, `script`, `remove` processors** | ✅ All ingest processors available | ✅ All ingest processors available | ❌ **Not in allowlist** — only ML-related processors |
 | **`collapse` processor** | ✅ Supported | ✅ Supported | ❌ Not supported |
-| **Error messages** | Full, unmasked error with details | Full error messages | ⚠️ **All 4xx masked as 403 Forbidden** — no detail |
+| **Error messages** | Full error with details | Full error messages | Upstream status code and message (non-429 4xx no longer masked as 403) |
 | **Pipeline creation** | Immediate (synchronous) | Immediate | ⚠️ **Eventually consistent** (~30s delay after `acknowledged:true`) |
 | **IAM permissions for Bedrock** | N/A (or local role for Bedrock) | `bedrock:InvokeModel` on connector role | `bedrock:InvokeModel` + `aoss:CreateMLResource` + `aoss:ExecuteMLResource` in data access policy |
 | **Cross-region inference profiles** | Works if you have Bedrock access | Works | ✅ Required for Claude 4.x (base model IDs not invokable) |
-| **`verbose_pipeline=true`** | ✅ Works | ✅ Works | ✅ Works — **use this as primary debug tool** since errors are masked |
+| **`verbose_pipeline=true`** | ✅ Works | ✅ Works | ✅ Works — **primary debug tool** for search pipelines |
 | **`_simulate` (ingest)** | ✅ Full error details | ✅ Full error details | ✅ Better error surface than live ingest (use for debugging) |
 | **Rerank `by_field`** | ✅ Works | ✅ Works | ✅ Verified working |
 | **Rerank `ml_opensearch`** | ✅ Works | ✅ Works | ✅ Verified working
@@ -347,7 +346,7 @@ The `ml_inference` processor works across all three platforms, but each has uniq
 ### Platform-Specific Tips
 
 #### Open Source (self-managed)
-- **Easiest to debug** — error messages are unmasked and detailed
+- **Easiest to debug** — full stack and local logs available
 - No IAM complexity; use basic auth or disable security for local dev
 - Can use **any** model provider: Bedrock, SageMaker, OpenAI, Ollama, local models
 - `model_input` field available for complex prompt construction
@@ -367,11 +366,11 @@ The `ml_inference` processor works across all three platforms, but each has uniq
 - **Most restrictive** — only ML-related processors in the allowlist
 - Must use connector `${parameters.X}` templates (no `model_input`)
 - Must use `$._request.<path>` in response processors (no `ext.ml_inference`)
-- `credential.roleArn` is mandatory — forgot this = opaque `403`
+- `credential.roleArn` is mandatory — without it the connector fails with `Credentials are null or empty`
 - Trust policy needs: `"Service": "ml.opensearchservice.amazonaws.com"`
 - Data access policy needs: `aoss:CreateMLResource`, `aoss:ExecuteMLResource`
 - Pipeline creation is eventually consistent — retry after 30s
-- All 4xx errors masked as 403 → debug with `_simulate` or `verbose_pipeline=true`
+- Debug with `_simulate` (ingest) or `verbose_pipeline=true` (search) to find the failing processor
 - **Best for:** serverless workloads where you don't want to manage infrastructure, but expect more debugging friction
 
 ### Debugging Flowchart by Platform
@@ -380,11 +379,11 @@ The `ml_inference` processor works across all three platforms, but each has uniq
 _predict fails →
 ├── Open Source: Read the error message directly (it tells you exactly what's wrong)
 ├── AOS: Read the error message (usually clear); check IAM role trust + permissions
-└── AOSS: Error says "403 Forbidden" →
+└── AOSS: Read the error message first; if it is a 403 →
     ├── Try _simulate (shows better errors)
     ├── Check roleArn is set in connector
     ├── Check data access policy has CreateMLResource + ExecuteMLResource
     ├── Check role trusts ml.opensearchservice.amazonaws.com
     ├── Check bedrock:InvokeModel on the inference profile ARN (not base model ARN)
-    └── If still stuck: reproduce on open-source 3.x to see the unmasked error
+    └── If still stuck: reproduce on open-source 3.x to compare behavior
 ```
